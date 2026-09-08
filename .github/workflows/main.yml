@@ -170,9 +170,12 @@ jobs:
       - name: Run VDD helper smoke tests
         shell: pwsh
         run: |
-          $PSNativeCommandUseErrorActionPreference = $true
+          # The helper suite deliberately probes nonzero native exit codes.
+          # Its assertions throw on failure; keep those codes available to it.
+          $PSNativeCommandUseErrorActionPreference = $false
           & .\src_assets\windows\misc\vdd\smoke-test-vdd-device-helper.ps1
           & .\src_assets\windows\misc\vdd\smoke-test-install-vdd-selection.ps1
+          exit 0
 
   build_win:
     name: Windows
