@@ -452,7 +452,6 @@ jobs:
       - name: Package Windows
         shell: msys2 {0}
         run: |
-          $PSNativeCommandUseErrorActionPreference = $true
           set -o pipefail
           mkdir -p artifacts
           cd build
