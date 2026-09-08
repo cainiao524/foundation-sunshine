@@ -9,6 +9,9 @@
 #endif
 
 #include <optional>
+#include <atomic>
+#include <map>
+#include <memory>
 #include <unordered_map>
 
 #include <boost/process/v1.hpp>
@@ -73,26 +76,7 @@ namespace proc {
     int gamepad_mode;  ///< 0=inherit global, 1=auto, 2=Xbox 360, 3=DualShock 4
     std::chrono::seconds exit_timeout;
 
-    /**
-     * Server-side per-app display scheme (App Display Profile).
-     *
-     * These fields mirror the `display-*` keys of apps.json. Negative/empty
-     * values mean "inherit": the client request and the global configuration
-     * keep working exactly as in upstream. When set, the server overrides the
-     * matching client requests (priority: app profile > client > global).
-     *
-     * The values are mapped onto existing launch_session fields only
-     * (use_vdd, custom_screen_mode, enable_sops, SUNSHINE_CLIENT_DISPLAY_NAME,
-     * width/height/fps, enable_hdr); no new launch_session fields are added.
-     */
-    int display_target {-1};          ///< -1=inherit, 0=physical, 1=virtual
-    int display_device_prep {-1};     ///< -1=inherit, 0=no_operation, 1=ensure_active, 2=ensure_primary, 3=ensure_only_display, 4=ensure_secondary
-    int display_resolution_mode {-1}; ///< -1=inherit, 0=no_operation (ignore client), 1=client (follow client, stored as "client")
-    int display_refresh_rate_mode {-1}; ///< -1=inherit, 1=client (follow client, stored as "client"); no per-app no_operation gate (see process.cpp)
-    std::string display_output_name;  ///< Physical display device id used when display_target=physical; empty = default physical display
-    std::string display_resolution;   ///< Fixed resolution "WxH" (advanced option); empty = not set
-    std::string display_refresh_rate; ///< Fixed refresh rate in Hz (advanced option); empty = not set
-    int display_hdr {-1};             ///< -1=inherit, 0=force off, 1=force on (advanced option); always overrides the client hdrMode when set
+    std::optional<app_display::profile_t> display_profile;
     std::optional<rtsp_stream::synthetic_hdr_config_t> rtx_hdr;
   };
 
@@ -105,7 +89,7 @@ namespace proc {
       std::vector<ctx_t> &&apps):
         _app_id(0),
         _env(std::move(env)),
-        _apps(std::move(apps)) {}
+        _apps() { set_apps(std::move(apps)); }
 
     int
     execute(int app_id, std::shared_ptr<rtsp_stream::launch_session_t> launch_session);
@@ -168,6 +152,9 @@ namespace proc {
 
     boost::process::v1::environment _env;
     std::vector<ctx_t> _apps;
+    using display_profiles_t = std::map<std::string, std::optional<app_display::profile_t>>;
+    std::shared_ptr<std::atomic<std::shared_ptr<const display_profiles_t>>> _display_profiles {
+      std::make_shared<std::atomic<std::shared_ptr<const display_profiles_t>>>()};
     ctx_t _app;
     std::chrono::steady_clock::time_point _app_launch_time;
 

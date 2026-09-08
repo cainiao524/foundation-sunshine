@@ -571,7 +571,7 @@ namespace nvhttp::stream_start {
           make_configured_probe_target(intent, make_probe_target(intent)));
       };
       const auto try_vdd = [&] {
-        if (!vdd_fallback_allowed(intent)) {
+        if (launch_session.app_display_profile || !vdd_fallback_allowed(intent)) {
           return false;
         }
         display_recovery_attempted = true;
@@ -684,6 +684,12 @@ namespace nvhttp::stream_start {
     const auto intent = display_device::resolve_display_intent(config::video, launch_session);
     if (!validate_display_intent(tree, intent)) {
       return false;
+    }
+
+    if (launch_session.app_display_profile && intent.target == display_device::display_intent_t::target_e::physical) {
+      // Pin the resolved physical target for preparation, app commands and capture.
+      launch_session.app_display_profile->output_name = intent.device_id;
+      launch_session.env["SUNSHINE_CLIENT_DISPLAY_NAME"] = intent.device_id;
     }
 
     // Display configuration can change the active capture target, so probe

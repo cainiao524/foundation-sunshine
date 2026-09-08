@@ -3,6 +3,14 @@ import assert from 'node:assert/strict'
 
 import { AppService } from '../services/appService.js'
 
+test('saveApps reports rejected display configuration even with HTTP 200', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ status: 'false', error: 'Invalid display mode' }), {
+    status: 200, headers: { 'Content-Type': 'application/json' },
+  }))
+  t.mock.method(console, 'error', () => {})
+  await assert.rejects(AppService.saveApps([], { 'display-target': 'virtual' }), /Invalid display mode/)
+})
+
 test('searchApps returns a shallow copy when query is empty', () => {
   const apps = [
     { name: 'Steam Big Picture', cmd: 'steam://open/bigpicture' },

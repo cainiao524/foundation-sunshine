@@ -595,6 +595,7 @@ namespace stream {
     bool highly_suspected_unknown_client {false};
     std::string app_name;
     int app_id = 0;
+    std::optional<app_display::profile_t> app_display_profile;
 
     std::int64_t created_at_ms { 0 };
     std::atomic<std::int64_t> last_control_activity_ms { 0 };
@@ -1918,6 +1919,7 @@ namespace stream {
       // 注意：必须按照结构体声明顺序初始化字段
       rtsp_stream::launch_session_t temp_launch_session {};
       temp_launch_session.id = session->launch_session_id;
+      temp_launch_session.app_display_profile = session->app_display_profile;
       temp_launch_session.client_cert_uuid = session->client_cert_uuid;
       temp_launch_session.client_name = session->client_name;
       temp_launch_session.width = new_width;
@@ -1968,29 +1970,11 @@ namespace stream {
         }
       }
 
-      // Re-apply the per-app display scheme after the active-display copy so
-      // an app-configured target/layout takes precedence over the session's
-      // current capture display. Without the app scheme this is a no-op, and
-      // the resolution policy (fixed values / no_operation) below still
-      // governs the dynamic request.
-      proc::proc.apply_app_display_profile(session->app_id, temp_launch_session);
-
-      // Decide the effective resolution from the applied per-app scheme:
-      // - no_operation (sops off and no fixed override): reject the request;
-      // - fixed resolution: use the profile value;
-      // - otherwise follow the client value.
-      const bool fixed_resolution_override =
-        temp_launch_session.width != new_width || temp_launch_session.height != new_height;
-      if (!temp_launch_session.enable_sops && !fixed_resolution_override) {
-        BOOST_LOG(info) << "Dynamic resolution change ignored: per-app resolution policy is no_operation";
-        return;
-      }
-      const int effective_width = fixed_resolution_override ? temp_launch_session.width : new_width;
-      const int effective_height = fixed_resolution_override ? temp_launch_session.height : new_height;
+      // Display preparation consumes the immutable scheme; client viewport stays independent.
 
       // 更新会话配置（捕获/编码侧与显示配置保持一致）
-      session->config.monitor.width = effective_width;
-      session->config.monitor.height = effective_height;
+      session->config.monitor.width = new_width;
+      session->config.monitor.height = new_height;
       perf::update_session_display(
         session->launch_session_id,
         session->config.monitor.width,
@@ -2002,11 +1986,11 @@ namespace stream {
       // 注意：这也会触发捕获端和编码器的重新初始化，以适配新的分辨率
       if (is_rotation) {
         BOOST_LOG(info) << "Reconfiguring display device for rotation: " << old_width << "x" << old_height 
-                        << " -> " << effective_width << "x" << effective_height;
+                        << " -> " << new_width << "x" << new_height;
       }
       else {
         BOOST_LOG(info) << "Reconfiguring display device for new resolution: " << old_width << "x" << old_height 
-                        << " -> " << effective_width << "x" << effective_height;
+                        << " -> " << new_width << "x" << new_height;
       }
 
       if (active_display_resolved) {
@@ -2093,20 +2077,7 @@ namespace stream {
           return;
         }
 
-        // Consult the per-app display scheme: a fixed refresh rate overrides
-        // the dynamic client FPS for the capture/encoding session state.
-        rtsp_stream::launch_session_t temp_launch_session {};
-        temp_launch_session.width = session->config.monitor.width;
-        temp_launch_session.height = session->config.monitor.height;
-        temp_launch_session.fps = static_cast<int>(new_fps);
-        temp_launch_session.enable_hdr = session->enable_hdr;
-        temp_launch_session.enable_sops = session->enable_sops;
-        temp_launch_session.use_vdd = session->use_vdd;
-        temp_launch_session.custom_screen_mode = session->custom_screen_mode;
-        proc::proc.apply_app_display_profile(session->app_id, temp_launch_session);
-        const int effective_fps = temp_launch_session.fps > 0 ? temp_launch_session.fps : static_cast<int>(new_fps);
-
-        session->config.monitor.framerate = effective_fps;
+        session->config.monitor.framerate = static_cast<int>(new_fps);
         perf::update_session_display(
           session->launch_session_id,
           session->config.monitor.width,
@@ -2116,12 +2087,11 @@ namespace stream {
         
         video::dynamic_param_t param;
         param.type = video::dynamic_param_type_e::FPS;
-        param.value.float_value = static_cast<float>(effective_fps);
+        param.value.float_value = new_fps;
         param.valid = true;
         session->video.dynamic_param_change_events->raise(param);
         
-        BOOST_LOG(info) << "Dynamic FPS change: " << new_fps << " fps"
-                        << (effective_fps != static_cast<int>(new_fps) ? " (per-app fixed refresh rate applied)" : "");
+        BOOST_LOG(info) << "Dynamic FPS change: " << new_fps << " fps";
         return;
       }
 
@@ -4200,8 +4170,7 @@ namespace stream {
             system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
 #endif
 
-            // TODO: make this configurable per app
-            restore_display_state = false;
+            restore_display_state = app_display::restore_on_stop(session.app_display_profile, true);
           }
           else {
             tray_state::set_idle(proc::proc.get_last_run_app_name());
@@ -4517,6 +4486,7 @@ namespace stream {
       session->audio.enable_mic = launch_session.enable_mic;
 
       session->control_only = launch_session.control_only;
+      session->app_display_profile = launch_session.app_display_profile;
 
       session->control.peer = nullptr;
 

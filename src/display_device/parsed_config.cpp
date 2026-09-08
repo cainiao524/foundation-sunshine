@@ -178,6 +178,16 @@ namespace display_device {
      */
     bool
     parse_resolution_option(const config::video_t &config, const rtsp_stream::launch_session_t &session, parsed_config_t &parsed_config) {
+      if (session.app_display_profile && session.app_display_profile->overrides_resolution()) {
+        const auto &profile = *session.app_display_profile;
+        if (profile.resolution) parsed_config.resolution = *profile.resolution;
+        else if (profile.resolution_mode == app_display::mode_e::keep) parsed_config.resolution = boost::none;
+        else if (session.width > 0 && session.width <= 16384 && session.height > 0 && session.height <= 16384) {
+          parsed_config.resolution = resolution_t {static_cast<unsigned int>(session.width), static_cast<unsigned int>(session.height)};
+        }
+        else return false;
+        return true;
+      }
       const auto resolution_option { static_cast<parsed_config_t::resolution_change_e>(config.resolution_change) };
       switch (resolution_option) {
         case parsed_config_t::resolution_change_e::automatic: {
@@ -245,6 +255,16 @@ namespace display_device {
      */
     bool
     parse_refresh_rate_option(const config::video_t &config, const rtsp_stream::launch_session_t &session, parsed_config_t &parsed_config) {
+      if (session.app_display_profile && session.app_display_profile->overrides_refresh()) {
+        const auto &profile = *session.app_display_profile;
+        if (profile.refresh_rate) parsed_config.refresh_rate = *profile.refresh_rate;
+        else if (profile.refresh_mode == app_display::mode_e::keep) parsed_config.refresh_rate = boost::none;
+        else if (session.fps > 0 && session.fps <= 1000) {
+          parsed_config.refresh_rate = refresh_rate_t {static_cast<unsigned int>(session.fps), 1};
+        }
+        else return false;
+        return true;
+      }
       const auto refresh_rate_option { static_cast<parsed_config_t::refresh_rate_change_e>(config.refresh_rate_change) };
       switch (refresh_rate_option) {
         case parsed_config_t::refresh_rate_change_e::automatic: {
@@ -298,8 +318,12 @@ namespace display_device {
       constexpr auto resolution_only_remapping { "resolution_only" };
       constexpr auto refresh_rate_only_remapping { "refresh_rate_only" };
 
-      const auto resolution_option { static_cast<parsed_config_t::resolution_change_e>(config.resolution_change) };
-      const auto refresh_rate_option { static_cast<parsed_config_t::refresh_rate_change_e>(config.refresh_rate_change) };
+      // Remap inherited dimensions only. Combined rules must not override an
+      // explicit app mode or make it depend on a global remapping input.
+      const auto resolution_option = session.app_display_profile && session.app_display_profile->overrides_resolution() ?
+        parsed_config_t::resolution_change_e::no_operation : static_cast<parsed_config_t::resolution_change_e>(config.resolution_change);
+      const auto refresh_rate_option = session.app_display_profile && session.app_display_profile->overrides_refresh() ?
+        parsed_config_t::refresh_rate_change_e::no_operation : static_cast<parsed_config_t::refresh_rate_change_e>(config.refresh_rate_change);
 
       // Copy only the remapping values that we can actually use with our configuration options
       std::vector<config::video_t::display_mode_remapping_t> remapping_values;
@@ -476,6 +500,15 @@ namespace display_device {
      */
     boost::optional<bool>
     parse_hdr_option(const config::video_t &config, const rtsp_stream::launch_session_t &session) {
+      if (session.app_display_profile) {
+        switch (session.app_display_profile->hdr) {
+          case app_display::hdr_e::keep: return boost::none;
+          case app_display::hdr_e::on: return true;
+          case app_display::hdr_e::off: return false;
+          case app_display::hdr_e::client: return display_prepared_for_hdr(config, session);
+          default: break;
+        }
+      }
       const auto hdr_prep_option { static_cast<parsed_config_t::hdr_prep_e>(config.hdr_prep) };
       switch (hdr_prep_option) {
         case parsed_config_t::hdr_prep_e::automatic:
@@ -518,6 +551,7 @@ namespace display_device {
     resolve_device_prep(const config::video_t &config, const rtsp_stream::launch_session_t &session) {
       using device_prep_e = parsed_config_t::device_prep_e;
 
+      if (session.app_display_profile && session.app_display_profile->topology) return *session.app_display_profile->topology;
       const auto configured = static_cast<device_prep_e>(config.display_device_prep);
       if (session.custom_screen_mode < 0) {
         return configured;
@@ -539,6 +573,10 @@ namespace display_device {
 
   bool
   display_prepared_for_hdr(const config::video_t &config, const rtsp_stream::launch_session_t &session) {
+    if (session.app_display_profile) {
+      if (session.app_display_profile->hdr == app_display::hdr_e::on) return true;
+      if (session.app_display_profile->hdr == app_display::hdr_e::off) return false;
+    }
     if (session.frame_pipeline_policy_resolved) {
       switch (session.frame_pipeline_policy.source_display) {
         case platf::source_display_intent_e::require_hdr:
@@ -566,6 +604,28 @@ namespace display_device {
       }
     }
 
+    const bool app_physical = session.app_display_profile &&
+      session.app_display_profile->target == app_display::target_e::physical;
+    if (session.app_display_profile) {
+      device_id = app_physical ? session.app_display_profile->output_name : "";
+      client_named_it = !device_id.empty();
+#ifdef _WIN32
+      if (app_physical && device_id.empty()) {
+        const auto devices = enum_available_devices_checked();
+        if (!devices) return {display_intent_t::target_e::unavailable, "", true, resolve_device_prep(config, session)};
+        auto selected = devices->end();
+        for (auto it = devices->begin(); it != devices->end(); ++it) {
+          if (it->second.friendly_name == ZAKO_NAME) continue;
+          if (selected == devices->end() ||
+              static_cast<int>(it->second.device_state) > static_cast<int>(selected->second.device_state)) selected = it;
+        }
+        if (selected == devices->end()) return {display_intent_t::target_e::unavailable, "", true, resolve_device_prep(config, session)};
+        device_id = selected->first;
+        client_named_it = true;
+      }
+#endif
+    }
+
     display_intent_t intent {
       display_intent_t::target_e::physical,
       device_id,
@@ -574,10 +634,11 @@ namespace display_device {
     };
 
     // An explicit VDD request does not depend on CCD being available.
-    bool explicit_vdd = session.use_vdd;
+    bool explicit_vdd = session.app_display_profile ?
+      session.app_display_profile->target == app_display::target_e::virtual_display : session.use_vdd;
 #ifdef _WIN32
     // VDD_NAME is the stable alias exposed by the Windows host configuration UI.
-    explicit_vdd = explicit_vdd || intent.device_id == VDD_NAME;
+    explicit_vdd = explicit_vdd || (!app_physical && intent.device_id == VDD_NAME);
 #endif
     if (explicit_vdd) {
       intent.target = display_intent_t::target_e::vdd;
@@ -609,7 +670,7 @@ namespace display_device {
 #endif
 
     if (requested_device_is_vdd) {
-      intent.target = display_intent_t::target_e::vdd;
+      intent.target = app_physical ? display_intent_t::target_e::unavailable : display_intent_t::target_e::vdd;
       return intent;
     }
 
@@ -725,6 +786,11 @@ namespace display_device {
   boost::optional<parsed_config_t>
   make_parsed_config(const config::video_t &config, const rtsp_stream::launch_session_t &session, bool is_reconfigure) {
     parsed_config_t parsed_config;
+    if (session.app_display_profile && !app_display::hdr_compatible(
+          *session.app_display_profile, session.enable_hdr, session.synthetic_hdr.enabled)) {
+      BOOST_LOG(error) << "App display HDR conflicts with the client HDR / RTX HDR pipeline";
+      return boost::none;
+    }
 
     // 显示器目标、是否为VDD、以及device_prep统一在此解析
     const auto intent = resolve_display_intent(config, session);
@@ -739,10 +805,11 @@ namespace display_device {
     // Resume 的任意零值模式都不能用于显示配置；保持现有分辨率和刷新率。
     const bool resume_mode_invalid = !is_reconfigure && (session.width <= 0 || session.height <= 0 || session.fps <= 0);
     // 解析分辨率和刷新率配置
-    if (!resume_mode_invalid &&
-        (!parse_resolution_option(config, session, parsed_config) ||
-         !parse_refresh_rate_option(config, session, parsed_config) ||
-         !remap_display_modes_if_needed(config, session, parsed_config))) {
+    const bool fixed_resolution = session.app_display_profile && session.app_display_profile->resolution;
+    const bool fixed_refresh = session.app_display_profile && session.app_display_profile->refresh_rate;
+    if (((!resume_mode_invalid || fixed_resolution) && !parse_resolution_option(config, session, parsed_config)) ||
+        ((!resume_mode_invalid || fixed_refresh) && !parse_refresh_rate_option(config, session, parsed_config)) ||
+        (!resume_mode_invalid && !remap_display_modes_if_needed(config, session, parsed_config))) {
       // 任何一步失败都返回空值
       return boost::none;
     }

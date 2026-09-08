@@ -2,7 +2,23 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
-import { normalizeAppDisplayProfile } from '../utils/appDisplayProfile.js'
+import { normalizeAppDisplayProfile, validDisplayResolution, validDisplayRefreshRate } from '../utils/appDisplayProfile.js'
+
+test('fixed host modes enforce the same bounds as the server', () => {
+  assert.equal(validDisplayResolution('16384x16384'), true)
+  assert.equal(validDisplayResolution('16385x1080'), false)
+  assert.equal(validDisplayResolution('1920x1080junk'), false)
+  for (const value of ['59.94', '119.88', '0.5', '1000']) assert.equal(validDisplayRefreshRate(value), true)
+  for (const value of ['1001', '0', '59.94junk', '1.1234567']) assert.equal(validDisplayRefreshRate(value), false)
+})
+
+test('disconnect and dynamic follow survive save and are removed when scheme is disabled', () => {
+  const app = { 'display-target': 'virtual', 'display-disconnect-action': 'restore', 'display-dynamic-resolution-follow-display': 'disabled' }
+  const normalized = normalizeAppDisplayProfile(app)
+  assert.equal(normalized['display-disconnect-action'], 'restore')
+  assert.equal(normalized['display-dynamic-resolution-follow-display'], 'disabled')
+  assert.deepEqual(normalizeAppDisplayProfile({ ...normalized, 'display-target': '' }), {})
+})
 
 test('app without a display scheme keeps no display fields at all', () => {
   const normalized = normalizeAppDisplayProfile({
@@ -55,14 +71,14 @@ test('invalid display-target clears the whole profile', () => {
   assert.deepEqual(normalized, { name: 'Game' })
 })
 
-test('refresh rate no_operation is dropped (no per-app refresh gate in the 0-change design)', () => {
+test('refresh rate no_operation remains independent of resolution', () => {
   const normalized = normalizeAppDisplayProfile({
     name: 'Game',
     'display-target': 'physical',
     'display-refresh-rate-mode': 'no_operation',
   })
 
-  assert.equal(normalized['display-refresh-rate-mode'], '')
+  assert.equal(normalized['display-refresh-rate-mode'], 'no_operation')
 })
 
 test('invalid fixed values are cleared', () => {

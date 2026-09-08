@@ -7,7 +7,17 @@ const DISPLAY_PROFILE_FIELDS = new Set([
   'display-resolution',
   'display-refresh-rate',
   'display-hdr',
+  'display-disconnect-action',
+  'display-dynamic-resolution-follow-display',
 ])
+
+export function validDisplayResolution(value) {
+  return /^[1-9]\d{0,4}x[1-9]\d{0,4}$/.test(value) && value.split('x').every((part) => Number(part) <= 16384)
+}
+
+export function validDisplayRefreshRate(value) {
+  return /^\d+(?:\.\d{1,6})?$/.test(value) && Number(value) > 0 && Number(value) <= 1000
+}
 
 /**
  * Normalize the per-app display scheme fields before saving.
@@ -33,22 +43,25 @@ export function normalizeAppDisplayProfile(app) {
   if (!['', 'no_operation', 'client'].includes(normalized['display-resolution-mode'])) {
     normalized['display-resolution-mode'] = ''
   }
-  // The refresh rate has no per-app "ignore client" gate in the 0-change
-  // design (upstream applies the client fps unconditionally in the
-  // automatic branch), so `no_operation` would silently do nothing while
-  // also disabling the shared sops gate for the resolution. Drop it.
-  if (!['', 'client'].includes(normalized['display-refresh-rate-mode'])) {
+  if (!['', 'no_operation', 'client'].includes(normalized['display-refresh-rate-mode'])) {
     normalized['display-refresh-rate-mode'] = ''
   }
-  if (normalized['display-resolution'] && !/^[1-9]\d{1,4}x[1-9]\d{1,4}$/.test(normalized['display-resolution'])) {
+  if (normalized['display-resolution'] && !validDisplayResolution(normalized['display-resolution'])) {
     normalized['display-resolution'] = ''
   }
-  if (normalized['display-refresh-rate'] && !/^[1-9]\d{0,3}(?:\.\d+)?$/.test(normalized['display-refresh-rate'])) {
+  if (normalized['display-refresh-rate'] && !validDisplayRefreshRate(normalized['display-refresh-rate'])) {
     normalized['display-refresh-rate'] = ''
   }
-  if (!['', 'on', 'off'].includes(normalized['display-hdr'])) {
+  if (!['', 'on', 'off', 'client', 'no_operation'].includes(normalized['display-hdr'])) {
     normalized['display-hdr'] = ''
   }
   if (normalized['display-target'] !== 'physical') delete normalized['display-output-name']
+  for (const [field, values] of Object.entries({
+    'display-device-prep': ['', 'no_operation', 'ensure_active', 'ensure_primary', 'ensure_secondary', 'ensure_only_display'],
+    'display-disconnect-action': ['', 'keep', 'restore'],
+    'display-dynamic-resolution-follow-display': ['', 'enabled', 'disabled'],
+  })) {
+    if (!values.includes(normalized[field])) normalized[field] = ''
+  }
   return normalized
 }

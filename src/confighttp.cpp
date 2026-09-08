@@ -843,6 +843,7 @@ namespace confighttp {
       auto &input_edit_node = inputTree.get_child("editApp"s);
 
       const auto normalize_gamepad = [&](pt::ptree &app_node) {
+        app_display::parse(app_node);  // Validate before persisting an enabled scheme.
         auto gamepad = app_node.get_optional<std::string>("gamepad");
         if (gamepad && gamepad->empty()) {
           app_node.erase("gamepad");

@@ -158,13 +158,7 @@
                   :displays="displayDevices"
                 />
 
-                <div v-if="showPhysicalGlobalVddWarning" class="alert alert-warning display-profile-alert" role="alert">
-                  <i class="fas fa-triangle-exclamation me-2"></i>
-                  {{ t('apps.display_profile_physical_global_vdd_warning') }}
-                </div>
-                <div class="form-text" style="margin-top: .35rem;">
-                  {{ t('apps.display_profile_dual_gpu_hint') }}
-                </div>
+
 
                 <template v-if="hasForcedDisplayProfile">
                   <div v-if="formData['display-target'] === 'virtual' && formData['display-device-prep'] === 'ensure_only_display'" class="alert alert-warning display-profile-alert" role="alert">
@@ -201,7 +195,7 @@
                       name="app_refresh_rate_change"
                       label-key="apps.display_profile_refresh_rate"
                       option-key-prefix="apps.display_profile_"
-                      :options="['inherit', 'follow_client']"
+                      :options="['inherit', 'no_operation', 'follow_client']"
                       :option-labels="appRefreshRateOptionLabels"
                       :platform-aware="false"
                       :disabled="hasFixedRefreshRate"
@@ -254,6 +248,8 @@
                         <label class="form-label" for="app_fixed_hdr">{{ t('apps.display_profile_fixed_hdr') }}</label>
                         <select class="form-select" id="app_fixed_hdr" v-model="formData['display-hdr']">
                           <option value="">{{ t('apps.display_profile_fixed_hdr_inherit') }}</option>
+                          <option value="client">{{ t('apps.display_profile_follow_client') }}</option>
+                          <option value="no_operation">{{ t('apps.display_profile_no_operation') }}</option>
                           <option value="on">{{ t('apps.display_profile_fixed_hdr_on') }}</option>
                           <option value="off">{{ t('apps.display_profile_fixed_hdr_off') }}</option>
                         </select>
@@ -261,6 +257,24 @@
                       <div class="impl-note">{{ t('apps.display_profile_advanced_hdr_note') }}</div>
                     </div>
                   </details>
+                  <div class="row g-3 mt-1">
+                    <div class="col-md-6">
+                      <label class="form-label" for="app_disconnect">{{ t('apps.display_profile_disconnect') }}</label>
+                      <select class="form-select" id="app_disconnect" v-model="formData['display-disconnect-action']">
+                        <option value="">{{ t('apps.display_profile_inherit') }}</option>
+                        <option value="keep">{{ t('apps.display_profile_keep') }}</option>
+                        <option value="restore">{{ t('apps.display_profile_restore') }}</option>
+                      </select>
+                    </div>
+                    <div class="col-md-6">
+                      <label class="form-label" for="app_dynamic_follow">{{ t('apps.display_profile_dynamic_follow') }}</label>
+                      <select class="form-select" id="app_dynamic_follow" v-model="formData['display-dynamic-resolution-follow-display']">
+                        <option value="">{{ t('apps.display_profile_inherit') }}</option>
+                        <option value="enabled">{{ t('apps.display_profile_enabled') }}</option>
+                        <option value="disabled">{{ t('apps.display_profile_disabled') }}</option>
+                      </select>
+                    </div>
+                  </div>
                 </template>
               </AccordionItem>
 
@@ -486,7 +500,7 @@ import NewDisplayOutputSelector from '../configs/tabs/audiovideo/NewDisplayOutpu
 import { createFileSelector } from '../utils/fileSelection.js'
 import { apiJson, apiPostJson } from '../utils/apiFetch.js'
 import { deepClone } from '../utils/helpers.js'
-import { normalizeAppDisplayProfile } from '../utils/appDisplayProfile.js'
+import { normalizeAppDisplayProfile, validDisplayResolution, validDisplayRefreshRate } from '../utils/appDisplayProfile.js'
 import { PER_APP_GAMEPAD_MODES } from '../utils/gamepadModes.js'
 
 const DEFAULT_FORM_DATA = Object.freeze({
@@ -514,6 +528,8 @@ const DEFAULT_FORM_DATA = Object.freeze({
   'display-resolution': '',
   'display-refresh-rate': '',
   'display-hdr': '',
+  'display-disconnect-action': '',
+  'display-dynamic-resolution-follow-display': '',
   'rtx-hdr': {
     mode: 'inherit',
     contrast: 0,
@@ -565,13 +581,13 @@ const isNewApp = computed(() => !props.app || props.app.index === -1)
 
 // ---- App Display Profile (server-side per-app display scheme) ----
 const displayDevices = ref([])
-const globalOutputName = ref('')
+
 
 const loadDisplayDevices = async () => {
   try {
     const config = await apiJson('/api/config')
     displayDevices.value = Array.isArray(config.display_devices) ? config.display_devices : []
-    globalOutputName.value = typeof config.output_name === 'string' ? config.output_name : ''
+
   } catch (_) {
     displayDevices.value = []
   }
@@ -605,11 +621,12 @@ const displayRuleModes = Object.freeze({
 })
 const appResolutionOptionLabels = computed(() => ({
   inherit: t('apps.display_profile_inherit'),
-  no_operation: tp('config.resolution_change_no_operation'),
+  no_operation: t('apps.display_profile_no_operation'),
   follow_client: tp('config.resolution_change_automatic'),
 }))
 const appRefreshRateOptionLabels = computed(() => ({
   inherit: t('apps.display_profile_inherit'),
+  no_operation: t('apps.display_profile_no_operation'),
   follow_client: tp('config.refresh_rate_change_automatic'),
 }))
 const displayRuleValue = (mode) => {
@@ -664,21 +681,15 @@ const appRefreshRateRule = computed({
 })
 const displayProfileValid = computed(() => {
   if (!formData.value?.['display-target']) return true
-  if (hasFixedResolution.value && !/^[1-9]\d{1,4}x[1-9]\d{1,4}$/.test(formData.value['display-resolution'])) return false
-  if (hasFixedRefreshRate.value && !/^[1-9]\d{0,3}(?:\.\d+)?$/.test(formData.value['display-refresh-rate'])) return false
+  if (hasFixedResolution.value && !validDisplayResolution(formData.value['display-resolution'])) return false
+  if (hasFixedRefreshRate.value && !validDisplayRefreshRate(formData.value['display-refresh-rate'])) return false
   return true
 })
-// The default-physical-display option cannot override a global virtual
-// display selection (0-change design): warn the user about it.
-const showPhysicalGlobalVddWarning = computed(() =>
-  formData.value?.['display-target'] === 'physical' &&
-  !formData.value?.['display-output-name'] &&
-  globalOutputName.value === 'ZakoHDR'
-)
+
 const resHintText = computed(() => {
   const rule = appResolutionRule.value
   if (rule === 'no_operation') return t('apps.display_profile_resolution_ignore_hint')
-  if (rule === 'follow_client') return tp('config.resolution_change_ogs_desc')
+  if (rule === 'follow_client') return t('apps.display_profile_resolution_follow_hint')
   return ''
 })
 const rrHintText = computed(() => {

@@ -36,7 +36,10 @@ export class AppService {
    */
   static async saveApps(apps, editApp = null) {
     try {
-      await apiPostJson(API_ENDPOINTS.APPS, { apps, editApp });
+      const result = await apiPostJson(API_ENDPOINTS.APPS, { apps, editApp });
+      if (result.status === false || result.status === 'false') {
+        throw new Error(result.error || 'Application configuration was rejected');
+      }
       return true;
     } catch (error) {
       console.error('保存应用失败:', error);

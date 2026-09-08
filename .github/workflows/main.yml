@@ -131,6 +131,8 @@ jobs:
           TAG="${REQUESTED_TAG:-$VERSION}"
           NAME="${REQUESTED_NAME:-$TAG}"
           SOURCE_REF="${REQUESTED_SOURCE_REF:-${{ github.sha }}}"
+          git fetch --no-tags --no-recurse-submodules origin "$SOURCE_REF"
+          SOURCE_REF=$(git rev-parse 'FETCH_HEAD^{commit}')
           if [ "$PUBLISH_RELEASE" = "true" ]; then
             if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
               echo '::error::正式发布只能由用户手动触发 main.yml。'
@@ -168,12 +170,13 @@ jobs:
       - name: Run VDD helper smoke tests
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           & .\src_assets\windows\misc\vdd\smoke-test-vdd-device-helper.ps1
           & .\src_assets\windows\misc\vdd\smoke-test-install-vdd-selection.ps1
 
   build_win:
     name: Windows
-    needs: setup_release
+    needs: [setup_release, vdd_smoke]
     runs-on: windows-latest
     permissions:
       contents: write
@@ -266,6 +269,7 @@ jobs:
       - name: Build and test pinned Control Panel
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           Push-Location .\src_assets\common\sunshine-control-panel
           try {
             npm ci
@@ -305,12 +309,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           .\scripts\test-prepare-ds5-sidecar-manifest.ps1
           .\scripts\prepare-ds5-sidecar-manifest.ps1 -OutputPath .\build\ds5-sidecar-package.json
 
       - name: Build Web UI
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           npm ci
           npm run lint:webui
           npm run test:webui
@@ -385,7 +391,7 @@ jobs:
 
       - name: Run native tests
         shell: msys2 {0}
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --no-tests=error
 
       - name: Cache Inno Setup
         id: inno-cache
@@ -398,6 +404,7 @@ jobs:
         if: steps.inno-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           # TEMP (v3.0.1 only): pinned GitHub Release download with digest
           # check. jrsoftware.org has repeatedly timed out from this repo's
           # runners; revisit following upstream (scheme B) afterwards.
@@ -436,11 +443,13 @@ jobs:
       - name: Add Inno Setup to PATH
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           echo "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
 
       - name: Package Windows
         shell: msys2 {0}
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           set -o pipefail
           mkdir -p artifacts
           cd build
@@ -484,6 +493,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           # The pinned control panel downloads the optional DualSense runtime
           # from the upstream stable release (see the embedded manifest). Also
           # publish the exact same upstream artifacts here so users can grab
@@ -536,6 +546,7 @@ jobs:
       - name: Generate Checksums
         shell: pwsh
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           # Generate SHA256 checksums after the assets have their final names.
           .\scripts\generate-checksums.ps1 -Path .\artifacts -Output "SHA256SUMS.txt"
 
@@ -544,6 +555,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.setup_release.outputs.release_tag }}
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           $releaseCommit = (git rev-parse HEAD).Trim()
           .\scripts\generate-app-display-release-notes.ps1 `
             -ReleaseTag $env:RELEASE_TAG `

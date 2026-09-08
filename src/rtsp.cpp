@@ -1549,6 +1549,15 @@ namespace rtsp_stream {
       monitor.encoderCscMode = getArg("x-nv-video[0].encoderCscMode"sv);
       monitor.videoFormat = getArg("x-nv-vqos[0].bitStreamFormat"sv);
       monitor.dynamicRange = getArg("x-nv-video[0].dynamicRangeMode"sv);
+      if (session.app_display_profile) {
+        monitor.dynamic_resolution_follow_display = session.app_display_profile->dynamic_follow_display;
+        if (!app_display::hdr_compatible(*session.app_display_profile, monitor.dynamicRange > 0,
+              session.synthetic_hdr.enabled && monitor.dynamicRange == 1)) {
+          BOOST_LOG(error) << "App display HDR conflicts with the announced stream format";
+          respond(sock, session, &option, 400, "App display HDR conflicts with stream format", req->sequenceNumber, {});
+          return;
+        }
+      }
 #ifdef _WIN32
       // The TrueHDR chain (filter output, synthetic metadata, wire colorspace)
       // is specified for PQ only; HLG sessions must keep the legacy capture
@@ -1613,6 +1622,15 @@ namespace rtsp_stream {
       }
       else {
         monitor.display_name = config::video.output_name;
+      }
+      if (session.app_display_profile) {
+        const auto intent = display_device::resolve_display_intent(config::video, session);
+        if (intent.target == display_device::display_intent_t::target_e::unavailable) {
+          respond(sock, session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
+          return;
+        }
+        monitor.display_name = intent.target == display_device::display_intent_t::target_e::physical ?
+          intent.device_id : config::video.output_name;
       }
     }
     catch (std::out_of_range &) {

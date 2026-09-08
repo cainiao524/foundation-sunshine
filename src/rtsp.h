@@ -13,6 +13,7 @@
 #include <boost/process/v1.hpp>
 
 #include "crypto.h"
+#include "app_display_profile.h"
 #include "hdr/client_display_capabilities.h"
 #include "launch_session_manager.h"
 #include "src/platform/frame_contract.h"
@@ -62,6 +63,7 @@ namespace rtsp_stream {
     bool enable_mic { false };
     bool use_vdd;
     int custom_screen_mode;
+    std::optional<app_display::profile_t> app_display_profile;
 
     // Client-declared intent to use the on-screen touch keyboard during the
     // session.  Tri-state: -1 undeclared (fall back to the per-client server

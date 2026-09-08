@@ -4075,7 +4075,7 @@ namespace video {
         last_display_width = current_width;
         last_display_height = current_height;
 
-        if (!config::video.dynamic_resolution_follow_display) {
+        if (!config.dynamic_resolution_follow_display.value_or(config::video.dynamic_resolution_follow_display)) {
           // Toggle off: keep the originally negotiated stream resolution and let the
           // encoder's scaler adapt. Avoids sending SS_RESOLUTION_CHANGE, which legacy
           // Moonlight clients (e.g. PSVita port) don't implement and would freeze on.
