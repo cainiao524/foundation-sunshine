@@ -15,6 +15,7 @@
 #include "crypto.h"
 #include "app_display_profile.h"
 #include "hdr/client_display_capabilities.h"
+#include "hdr_enhanced/config.h"
 #include "launch_session_manager.h"
 #include "src/platform/frame_contract.h"
 
@@ -71,10 +72,16 @@ namespace rtsp_stream {
     // host attaches the virtual USB touchscreen and applies the touch
     // keyboard AutoInvoke registry key group for the session.
     int touch_keyboard { -1 };
+    // Client-declared controller emulation type for this session (Sunshine
+    // protocol extension carried on the /launch and /resume query string).
+    // Empty = undeclared: the host-side selection chain applies as before.
+    // One of: auto, x360, ds4, ds5.
+    std::string client_gamepad;
     hdr::client_display_capabilities_t reported_hdr_capabilities;
     hdr::client_display_capabilities_t hdr_capabilities;
     hdr::target_source_e hdr_target_source { hdr::target_source_e::safe_defaults };
     synthetic_hdr_config_t synthetic_hdr;
+    boost::shared_ptr<const hdr_enhanced::backend_use_t> hdr_backend;
 
     // Resolved frame-pipeline policy for this session, published by RTSP SETUP
     // so display preparation consumes the same decision as the capture/encode
@@ -114,6 +121,19 @@ namespace rtsp_stream {
   launch_session_raise(std::shared_ptr<launch_session_t> launch_session);
 
   /**
+   * @brief Track an NVHTTP launch while it prepares the display and publishes its RTSP ticket.
+   */
+  class launch_preparation_guard_t {
+  public:
+    launch_preparation_guard_t() noexcept;
+    ~launch_preparation_guard_t() noexcept;
+
+    launch_preparation_guard_t(const launch_preparation_guard_t &) = delete;
+    launch_preparation_guard_t &
+    operator=(const launch_preparation_guard_t &) = delete;
+  };
+
+  /**
    * @brief Clear state for the specified launch session.
    * @param launch_session_id The ID of the session to clear.
    */
@@ -132,6 +152,12 @@ namespace rtsp_stream {
    */
   int
   pending_session_count();
+
+  /**
+   * @brief Check whether an NVHTTP launch, RTSP handshake, or stream session is active.
+   */
+  bool
+  session_starting_or_active();
 
   /**
    * @brief Terminates all streaming sessions on the RTSP execution context.

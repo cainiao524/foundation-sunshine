@@ -478,8 +478,6 @@ namespace config {
     "auto"s,  // capture_compute_shader (automatic capability and benefit detection)
     false,  // wgc_disable_secure_desktop (disabled by default for security)
     true,  // dynamic_resolution_follow_display (default: on; matches existing behavior. Set false for legacy clients like PSVita Moonlight.)
-    "off"s,  // rtx_hdr: off | per_app
-    {},  // rtx_hdr_backend_path (absolute path to the versioned backend DLL)
   };
 
   audio_t audio {
@@ -513,6 +511,8 @@ namespace config {
     "sunshine_state.json"s,  // file_state
     "[]"s,  // file_mappings
     48020,  // file_mapping_port
+    false,  // usb_forwarding_enabled: explicit host opt-in
+    0,  // usb_forwarding_port: automatic (main port + 7)
     {},  // external_ip
     {
       "1280x720"s,
@@ -569,6 +569,7 @@ namespace config {
     true,  // virtual mouse (use driver if available)
     false, // amf_draw_mouse_cursor
     true,  // clipboard_sync (default on; effective only when the user-session GUI agent is alive and forwards data)
+    true,  // client_gamepad_override (client-declared type wins; no official client sends it today)
   };
 
   sunshine_t sunshine {
@@ -1411,19 +1412,6 @@ namespace config {
     bool_f(vars, "vdd_reuse", video.vdd_reuse);
     bool_f(vars, "vdd_borrowed_texture", video.vdd_borrowed_texture);
     bool_f(vars, "vdd_vulkan_hdr_bridge", video.vdd_vulkan_hdr_bridge);
-    string_f(vars, "rtx_hdr", video.rtx_hdr);
-    if (video.rtx_hdr == "true" || video.rtx_hdr == "on" || video.rtx_hdr == "enabled" || video.rtx_hdr == "1") {
-      video.rtx_hdr = "per_app";
-    }
-    if (video.rtx_hdr.empty()) {
-      video.rtx_hdr = "off";
-    }
-    if (video.rtx_hdr != "off" && video.rtx_hdr != "per_app") {
-      BOOST_LOG(warning) << "Invalid rtx_hdr mode: ["sv << video.rtx_hdr
-                         << "], valid options are: off, per_app. Defaulting to 'off'"sv;
-      video.rtx_hdr = "off";
-    }
-    string_f(vars, "rtx_hdr_backend_path", video.rtx_hdr_backend_path);
 
     // Whether to composite the host mouse cursor into the captured frames.
     // The runtime toggle Ctrl+Alt+Shift+N (handled in input.cpp) overrides this at runtime.
@@ -1467,6 +1455,14 @@ namespace config {
     int file_mapping_port = nvhttp.file_mapping_port;
     int_between_f(vars, "file_mapping_port", file_mapping_port, { 1024, 65535 });
     nvhttp.file_mapping_port = static_cast<std::uint16_t>(file_mapping_port);
+    bool_f(vars, "usb_forwarding_enabled", nvhttp.usb_forwarding_enabled);
+    int usb_forwarding_port = nvhttp.usb_forwarding_port;
+    int_f(vars, "usb_forwarding_port", usb_forwarding_port);
+    if (usb_forwarding_port == 0 || (usb_forwarding_port >= 1024 && usb_forwarding_port <= 65535)) {
+      nvhttp.usb_forwarding_port = static_cast<std::uint16_t>(usb_forwarding_port);
+    } else {
+      BOOST_LOG(warning) << "Ignoring invalid usb_forwarding_port: expected 0 or 1024-65535";
+    }
 
     // Must be run after "file_state"
     config::sunshine.credentials_file = config::nvhttp.file_state;
@@ -1571,6 +1567,7 @@ namespace config {
     bool_f(vars, "motion_as_ds4", input.motion_as_ds4);
     bool_f(vars, "touchpad_as_ds4", input.touchpad_as_ds4);
     bool_f(vars, "enable_dsu_server", input.enable_dsu_server);
+    bool_f(vars, "client_gamepad_override", input.client_gamepad_override);
     
     int temp_port = static_cast<int>(input.dsu_server_port);
     int_between_f(vars, "dsu_server_port", temp_port, { 1024, 65535 });

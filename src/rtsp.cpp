@@ -10,6 +10,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 }
 
+
 // standard includes
 #include <algorithm>
 #include <array>
@@ -21,11 +22,13 @@ extern "C" {
 #include <vector>
 
 // lib includes
+#include <boost/atomic.hpp>
 #include <boost/asio.hpp>
 #include <boost/bind.hpp>
 
 // local includes
 #include "clipboard_bridge.h"
+#include "text_context/bridge.h"
 #include "config.h"
 #include "cursor_channel.h"
 #include "globals.h"
@@ -46,6 +49,18 @@ using asio::ip::udp;
 using namespace std::literals;
 
 namespace rtsp_stream {
+  namespace {
+    boost::atomic_uint32_t launch_preparations { 0 };
+  }
+
+  launch_preparation_guard_t::launch_preparation_guard_t() noexcept {
+    ++launch_preparations;
+  }
+
+  launch_preparation_guard_t::~launch_preparation_guard_t() noexcept {
+    --launch_preparations;
+  }
+
   void
   launch_session_t::set_hdr_target(
     const hdr::client_display_capabilities_t &capabilities,
@@ -980,6 +995,13 @@ namespace rtsp_stream {
     return server.pending_session_count();
   }
 
+  bool
+  session_starting_or_active() {
+    return launch_preparations.load() != 0 ||
+           server.pending_session_count() != 0 ||
+           server.session_count() != 0;
+  }
+
   void
   terminate_sessions_async(stream::session::stop_reason_e reason, boost::function<void()> completion) {
     server.terminate_sessions_async(reason, std::move(completion));
@@ -1124,6 +1146,9 @@ namespace rtsp_stream {
       }
       if (video::active_encoder_supports_dynamic_sdr_white()) {
         caps |= platf::platform_caps::dynamic_sdr_white;
+      }
+      if (text_context::bridge_t::instance().gui_alive()) {
+        caps |= platf::platform_caps::remote_text_context;
       }
       ss << "a=x-ss-general.featureFlags:" << caps << std::endl;
     }
@@ -1529,6 +1554,9 @@ namespace rtsp_stream {
       config.packetsize = getArg("x-nv-video[0].packetSize"sv);
       config.minRequiredFecPackets = getArg("x-nv-vqos[0].fec.minRequiredFecPackets"sv);
       config.mlFeatureFlags = getArg("x-ml-general.featureFlags"sv);
+      BOOST_LOG(debug) << "Moonlight feature flags: 0x" << std::hex << config.mlFeatureFlags
+                      << std::dec << ", remote_text_context="
+                      << ((config.mlFeatureFlags & ML_FF_REMOTE_TEXT_CONTEXT) != 0);
       config.audioQosType = getArg("x-nv-aqos.qosTrafficType"sv);
       config.videoQosType = getArg("x-nv-vqos[0].qosTrafficType"sv);
       config.encryptionFlagsEnabled = getArg("x-ss-general.encryptionEnabled"sv);
@@ -1559,10 +1587,10 @@ namespace rtsp_stream {
         }
       }
 #ifdef _WIN32
-      // The TrueHDR chain (filter output, synthetic metadata, wire colorspace)
-      // is specified for PQ only; HLG sessions must keep the legacy capture
-      // path. Docs §5.4 of rtx_hdr_stream_implementation.md.
-      post_process_hdr_active = session.synthetic_hdr.enabled && monitor.dynamicRange == 1;
+      // The TrueHDR output and synthetic metadata are defined for PQ. HLG keeps
+      // the original capture path so the encoded pixels and wire signal agree.
+      post_process_hdr_active = session.synthetic_hdr.enabled && session.hdr_backend && monitor.dynamicRange == 1;
+      if (!post_process_hdr_active) session.hdr_backend.reset();
       if (session.synthetic_hdr.enabled && monitor.dynamicRange == 2) {
         BOOST_LOG(warning) << "RTX HDR requires PQ (dynamicRangeMode=1); ignoring it for this HLG session"sv;
       }
@@ -1574,7 +1602,7 @@ namespace rtsp_stream {
           .middle_gray_nits = static_cast<float>(session.synthetic_hdr.middle_gray),
           .peak_nits = static_cast<float>(session.synthetic_hdr.peak_nits),
         };
-        monitor.pre_encode_filter_backend_path = config::video.rtx_hdr_backend_path;
+        monitor.hdr_backend = session.hdr_backend;
       }
 #endif
       monitor.frame_pipeline_policy =

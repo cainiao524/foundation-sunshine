@@ -8,6 +8,7 @@
 
 #include "process.h"
 
+#include <array>
 #include <cstdint>
 #include <cmath>
 #include <cstdlib>
@@ -20,13 +21,16 @@
 #include <stdexcept>
 #include <random>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <cstdio>
 #include <ctime>
 #include <thread>
 #include <utility>
+
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 #include <openssl/sha.h>
 
 #include <boost/property_tree/json_parser.hpp>
@@ -43,8 +47,11 @@
 #include <boost/asio/ssl/context_base.hpp>
 
 #include "config.h"
+#include "hdr_enhanced/api.h"
+#include "hdr_enhanced/config.h"
 #include "confighttp.h"
 #include "clipboard_http.h"
+#include "text_context/http.h"
 #include "ai/credential_store.h"
 #include "crypto.h"
 #include "display_device/color_profile.h"
@@ -111,6 +118,9 @@ namespace confighttp {
                << ", METHOD: " << request->method
                << ", PATH: " << request->path;
     
+    // Headers stay disabled because authentication and proxy headers may
+    // contain credentials.
+    /*
     // Headers
     if (!request->header.empty()) {
       log_stream << ", HEADERS: ";
@@ -122,17 +132,20 @@ namespace confighttp {
       }
     }
     
-    // Query parameters
+    */
+
+    static constexpr std::array safe_query_parameters {
+      "bitrate"sv,
+      "clientname"sv,
+    };
     auto query_params = request->parse_query_string();
-    if (!query_params.empty()) {
-      log_stream << ", PARAMS: ";
-      bool first = true;
-      for (auto &[name, val] : query_params) {
-        if (!first) log_stream << "&";
-        log_stream << name << "=" << val;
-        first = false;
-      }
-    }
+    http_util::append_allowed_request_log_fields(
+      log_stream,
+      ", PARAMS: "sv,
+      query_params,
+      safe_query_parameters,
+      "&"sv
+    );
     
     BOOST_LOG(verbose) << log_stream.str();
   }
@@ -183,6 +196,70 @@ namespace confighttp {
     return true;
   }
 
+  namespace {
+    struct request_header_value_t {
+      bool valid;
+      std::optional<std::string_view> value;
+    };
+
+    request_header_value_t
+    get_single_request_header(const req_https_t &request, const std::string_view name) {
+      const auto range = request->header.equal_range(std::string { name });
+      if (range.first == range.second) {
+        return { true, std::nullopt };
+      }
+
+      auto first = range.first;
+      const auto value = std::string_view { first->second };
+      if (++first != range.second) {
+        return { false, std::nullopt };
+      }
+      return { true, value };
+    }
+
+    void
+    send_cross_site_forbidden(resp_https_t response) {
+      const nlohmann::json body {
+        { "status", false },
+        { "error", "Cross-site request denied" },
+      };
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "application/json");
+      headers.emplace("X-Frame-Options", "DENY");
+      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+      response->write(SimpleWeb::StatusCode::client_error_forbidden, body.dump(), headers);
+    }
+
+    bool
+    authorize_browser_request(resp_https_t response, req_https_t request) {
+      const auto path = std::string_view { request->path };
+      if (!path.starts_with("/api/") &&
+          !path.starts_with("/steam-api/") &&
+          !path.starts_with("/steam-store/")) {
+        return true;
+      }
+
+      const auto origin = get_single_request_header(request, "origin");
+      const auto referer = get_single_request_header(request, "referer");
+      const auto fetch_site = get_single_request_header(request, "sec-fetch-site");
+      const auto host = get_single_request_header(request, "host");
+      const auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
+      if (!origin.valid || !referer.valid || !fetch_site.valid || !host.valid ||
+          !http_util::browser_request_source_allowed(
+            origin.value,
+            referer.value,
+            fetch_site.value,
+            host.value.value_or(std::string_view {}),
+            net::from_address(address) == net::PC
+          )) {
+        BOOST_LOG(debug) << "Web UI: rejected cross-site browser request to ["sv << request->path << ']';
+        send_cross_site_forbidden(std::move(response));
+        return false;
+      }
+      return true;
+    }
+  }  // namespace
+
   void
   send_unauthorized(resp_https_t response, req_https_t request) {
     auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
@@ -200,6 +277,8 @@ namespace confighttp {
    */
   void
   handleLogout(resp_https_t response, req_https_t request) {
+    if (!authorize_browser_request(response, request)) return;
+
     auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
     auto ip_type = net::from_address(address);
 
@@ -231,6 +310,8 @@ namespace confighttp {
 
   bool
   authenticate(resp_https_t response, req_https_t request) {
+    if (!authorize_browser_request(response, request)) return false;
+
     auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
     auto ip_type = net::from_address(address);
 
@@ -1268,6 +1349,8 @@ namespace confighttp {
     }
 
     outputTree.put("active_encoder", video::active_encoder_name());
+    // Configuration capability only; never expose the paired-client tunnel token here.
+    outputTree.put("usb_forwarding_config_version", "1");
     outputTree.put("pair_name", nvhttp::get_pair_name());
   }
 
@@ -1427,6 +1510,13 @@ namespace confighttp {
   }
 
   void
+  write_runtime_error(resp_https_t response, SimpleWeb::StatusCode http_status, int status_code, const std::string &status_message);
+
+  bool
+  require_localhost(resp_https_t response, req_https_t request, const std::string &action);
+
+
+  void
   saveConfig(resp_https_t response, req_https_t request) {
     if (!check_content_type(response, request, "application/json")) return;
     if (!authenticate(response, request)) return;
@@ -1469,6 +1559,7 @@ namespace confighttp {
       // 将 inputTree 转换为 std::map（保证有序）
       std::map<std::string, std::string> fullConfig;
       for (const auto &kv : inputTree) {
+        if (kv.first == "usb_forwarding_config_version") continue;
         std::string value = inputTree.get<std::string>(kv.first);
         fullConfig[kv.first] = value;
       }
@@ -1488,6 +1579,32 @@ namespace confighttp {
     }
 
     outputTree.put("status", "true");
+  }
+
+  void
+  getHdrEnhancedConfig(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request) || !require_localhost(response, request, "HDR configuration")) return;
+    hdr_enhanced::api::get_config(response);
+  }
+
+  void
+  saveHdrEnhancedConfig(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) return;
+    if (!authenticate(response, request) || !require_localhost(response, request, "HDR configuration")) return;
+    hdr_enhanced::api::save_config(response, request);
+  }
+
+  void
+  getHdrEnhancedStatus(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request) || !require_localhost(response, request, "HDR status")) return;
+    hdr_enhanced::api::get_status(response);
+  }
+
+  void
+  maintainHdrEnhancedComponent(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) return;
+    if (!authenticate(response, request) || !require_localhost(response, request, "HDR maintenance")) return;
+    hdr_enhanced::api::maintenance(response, request);
   }
 
   void
@@ -1787,6 +1904,7 @@ namespace confighttp {
 
   void
   savePassword(resp_https_t response, req_https_t request) {
+    if (!authorize_browser_request(response, request)) return;
     if (!check_content_type(response, request, "application/json")) return;
     if (!config::sunshine.username.empty() && !authenticate(response, request)) return;
 
@@ -2136,6 +2254,7 @@ namespace confighttp {
 
   void
   renameClient(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) return;
     if (!authenticate(response, request)) return;
 
     print_req(request);
@@ -2387,6 +2506,7 @@ namespace confighttp {
 
     try {
       const auto statuses = video::get_hdr_pipeline_statuses();
+      const auto enhancement_status = hdr_enhanced::manager().status();
       json response_json {
         { "success", true },
         { "status_code", 200 },
@@ -2398,7 +2518,7 @@ namespace confighttp {
 #endif
         { "configured_analysis_mode", config::video.hdr_luminance_analysis },
         { "configured_conversion_mode", config::video.capture_compute_shader },
-        { "configured_rtx_hdr_mode", config::video.rtx_hdr },
+        { "configured_hdr_backend", enhancement_status.value("selected_backend", std::string {}) },
         { "pipelines", json::array() },
       };
 
@@ -2667,7 +2787,7 @@ namespace confighttp {
       targetUrl += "?" + request->query_string;
     }
 
-    BOOST_LOG(info) << "Steam API proxy request: " << targetUrl;
+    BOOST_LOG(info) << "Steam API proxy request path: " << http_util::sanitize_request_log_value(path);
 
     // 安全检查：防止SSRF，确保目标主机确实是api.steampowered.com
     if (http::url_get_host(targetUrl) != "api.steampowered.com") {
@@ -2684,13 +2804,10 @@ namespace confighttp {
         // 设置响应头
         SimpleWeb::CaseInsensitiveMultimap headers;
         headers.emplace("Content-Type", "application/json");
-        headers.emplace("Access-Control-Allow-Origin", "*");
-        headers.emplace("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        headers.emplace("Access-Control-Allow-Headers", "Content-Type, Authorization");
         
         response->write(SimpleWeb::StatusCode::success_ok, content, headers);
       } else {
-        BOOST_LOG(error) << "Steam API request failed: " << targetUrl;
+        BOOST_LOG(error) << "Steam API request failed for path: " << http_util::sanitize_request_log_value(path);
         response->write(SimpleWeb::StatusCode::server_error_internal_server_error, "Steam API request failed");
       }
     } catch (const std::exception& e) {
@@ -2718,7 +2835,7 @@ namespace confighttp {
       targetUrl += "?" + request->query_string;
     }
 
-    BOOST_LOG(info) << "Steam Store proxy request: " << targetUrl;
+    BOOST_LOG(info) << "Steam Store proxy request path: " << http_util::sanitize_request_log_value(path);
 
     // 安全检查：防止SSRF，确保目标主机确实是store.steampowered.com
     if (http::url_get_host(targetUrl) != "store.steampowered.com") {
@@ -2735,13 +2852,10 @@ namespace confighttp {
         // 设置响应头
         SimpleWeb::CaseInsensitiveMultimap headers;
         headers.emplace("Content-Type", "application/json");
-        headers.emplace("Access-Control-Allow-Origin", "*");
-        headers.emplace("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        headers.emplace("Access-Control-Allow-Headers", "Content-Type, Authorization");
         
         response->write(SimpleWeb::StatusCode::success_ok, content, headers);
       } else {
-        BOOST_LOG(error) << "Steam Store request failed: " << targetUrl;
+        BOOST_LOG(error) << "Steam Store request failed for path: " << http_util::sanitize_request_log_value(path);
         response->write(SimpleWeb::StatusCode::server_error_internal_server_error, "Steam Store request failed");
       }
     } catch (const std::exception& e) {
@@ -3347,6 +3461,7 @@ namespace confighttp {
    */
   void
   proxyAiChat(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) return;
     if (!authenticate(response, request)) return;
     print_req(request);
 
@@ -3690,7 +3805,21 @@ namespace confighttp {
 
   void
   testMenuCmd(resp_https_t response, req_https_t request) {
+    if (!check_content_type(response, request, "application/json")) return;
     if (!authenticate(response, request)) return;
+
+    constexpr bool test_command_enabled = false;
+    if (!test_command_enabled) {
+      const nlohmann::json body {
+        { "status", false },
+        { "error", "Test command execution is temporarily disabled" },
+        { "error_code", "TEST_COMMAND_DISABLED" },
+      };
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      headers.emplace("Content-Type", "application/json");
+      response->write(SimpleWeb::StatusCode::server_error_service_unavailable, body.dump(), headers);
+      return;
+    }
 
     // 安全限制：只允许局域网访问测试命令功能
     auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
@@ -3843,6 +3972,10 @@ namespace confighttp {
     server.resource["^/api/apps$"]["POST"] = saveApp;
     server.resource["^/api/config$"]["GET"] = getConfig;
     server.resource["^/api/config$"]["POST"] = saveConfig;
+    server.resource["^/api/hdr-enhanced/config$"]["GET"] = getHdrEnhancedConfig;
+    server.resource["^/api/hdr-enhanced/config$"]["POST"] = saveHdrEnhancedConfig;
+    server.resource["^/api/hdr-enhanced/status$"]["GET"] = getHdrEnhancedStatus;
+    server.resource["^/api/hdr-enhanced/components/alkaidlab\\.nvidia_rtx_video/maintenance$"]["POST"] = maintainHdrEnhancedComponent;
     server.resource["^/api/webhook/config$"]["GET"] = getWebhookConfig;
     server.resource["^/api/webhook/config$"]["POST"] = saveWebhookConfig;
     server.resource["^/api/webhook/test$"]["POST"] = testWebhook;
@@ -3905,13 +4038,22 @@ namespace confighttp {
       [](clipboard_http::resp_https_t resp, clipboard_http::req_https_t req) {
         return authenticate(std::move(resp), std::move(req));
       });
-    tray_http::auth_fn tray_local_auth = [](tray_http::resp_https_t resp, tray_http::req_https_t req) {
+    text_context::http::register_routes(server,
+      [](text_context::http::resp_https_t resp, text_context::http::req_https_t req) {
         const auto address = net::addr_to_normalized_string(req->remote_endpoint().address());
-        if (config::sunshine.username.empty() && net::from_address(address) == net::PC) {
-          return true;
+        if (net::from_address(address) != net::PC) {
+          resp->write(SimpleWeb::StatusCode::client_error_forbidden);
+          return false;
         }
         return authenticate(std::move(resp), std::move(req));
-      };
+      });
+    tray_http::auth_fn tray_local_auth = [](tray_http::resp_https_t resp, tray_http::req_https_t req) {
+      const auto address = net::addr_to_normalized_string(req->remote_endpoint().address());
+      if (config::sunshine.username.empty() && net::from_address(address) == net::PC) {
+        return authorize_browser_request(std::move(resp), std::move(req));
+      }
+      return authenticate(std::move(resp), std::move(req));
+    };
     tray_http::register_routes(server, tray_local_auth, tray_local_auth);
     server.resource["^/assets\\/.+$"]["GET"] = getNodeModules;
     server.config.reuse_address = true;
@@ -3952,6 +4094,7 @@ namespace confighttp {
     // Wait for any event
     shutdown_event->view();
 
+    hdr_enhanced::api::shutdown();
     server.stop();
 
     tcp.join();

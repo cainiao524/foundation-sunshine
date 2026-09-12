@@ -333,6 +333,7 @@ namespace platf {
     constexpr caps_t cursor_shape = 0x40;  // Client-rendered cursor shape updates
     constexpr caps_t ds5_haptics_pcm = 0x80;  // Native DualSense authored haptics PCM
     constexpr caps_t dynamic_sdr_white = 0x100;  // Runtime client SDR reference white updates
+    constexpr caps_t remote_text_context = 0x200;  // InputPane/UIA text context updates
   };  // namespace platform_caps
 
   struct gamepad_state_t {
@@ -705,6 +706,22 @@ namespace platf {
     virtual std::unique_ptr<amf_encode_device_t>
     make_amf_encode_device(pix_fmt_e pix_fmt) {
       return nullptr;
+    }
+
+    // 编码器使用会话自身的配置，不能借用共享采集设备的首个会话配置。
+    virtual std::unique_ptr<avcodec_encode_device_t>
+    make_avcodec_encode_device(pix_fmt_e pix_fmt, const ::video::config_t &config) {
+      return make_avcodec_encode_device(pix_fmt);
+    }
+
+    virtual std::unique_ptr<nvenc_encode_device_t>
+    make_nvenc_encode_device(pix_fmt_e pix_fmt, const ::video::config_t &config) {
+      return make_nvenc_encode_device(pix_fmt);
+    }
+
+    virtual std::unique_ptr<amf_encode_device_t>
+    make_amf_encode_device(pix_fmt_e pix_fmt, const ::video::config_t &config) {
+      return make_amf_encode_device(pix_fmt);
     }
 
     virtual bool
@@ -1080,6 +1097,14 @@ namespace platf {
    */
   void
   set_gamepad_mode(int mode);
+  /**
+   * @brief Publish the client-declared controller type for the upcoming session.
+   * @param pref Empty = undeclared (host-side selection chain applies),
+   *             otherwise one of: auto, x360, ds4, ds5. Consumed per gamepad
+   *             allocation while the session streams; re-set on every launch.
+   */
+  void
+  set_client_gamepad_pref(std::string pref);
   void
   abs_mouse(input_t &input, const touch_port_t &touch_port, float x, float y);
   void

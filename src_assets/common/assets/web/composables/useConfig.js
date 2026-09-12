@@ -43,6 +43,8 @@ const DEFAULT_TABS = [
       always_send_scancodes: 'enabled',
       key_rightalt_to_key_win: 'disabled',
       mouse: 'enabled',
+      usb_forwarding_enabled: 'disabled',
+      usb_forwarding_port: 0,
       high_resolution_scrolling: 'enabled',
       native_pen_touch: 'enabled',
       native_touchpad_optimization: 'enabled',
@@ -124,8 +126,6 @@ const DEFAULT_TABS = [
       av1_mode: 0,
       capture: '',
       encoder: '',
-      rtx_hdr: 'off',
-      rtx_hdr_backend_path: '',
     },
   },
   {
@@ -428,7 +428,7 @@ export function useConfig() {
       platform.value = data.platform || ''
       filterTabsByPlatform(platform.value)
 
-      const { platform: _, status, version, ...configData } = data
+      const { platform: _, status, version, usb_forwarding_config_version, ...configData } = data
       configData.amd_avcodec_compat = normalizeEnabledDisabledValue(configData.amd_avcodec_compat)
       config.value = configData
 
